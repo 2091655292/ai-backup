@@ -57,12 +57,16 @@ EdgeOne Makers 是腾讯云边缘全栈平台：静态资源全球托管，`/fun
 
 ### 步骤二：在 Makers 控制台创建项目
 
+> **重要：本项目位于仓库的 `puzzle-tracker/` 子目录**，创建项目时必须在项目设置里把「**根目录**」填为 `puzzle-tracker`，否则构建与函数路由都会找不到代码。
+
 1. 打开 EdgeOne Makers 控制台，选择「导入 Git 仓库」，关联并选择你的仓库
-2. 项目设置使用根目录下已提供的 `edgeone.json`（自动识别，无需手动填），关键配置：
+2. 「项目设置 → 构建部署配置」中确认以下配置（配合 `puzzle-tracker/edgeone.json`，根目录设对后会自动识别）：
+   - **根目录**：`puzzle-tracker`
    - 构建命令：`npm run build`（前端 Vite 构建）
+   - 安装命令：`npm install`
    - 输出目录：`client/dist`
    - Node 版本：22.11.0
-   - SPA 路由：`/*` → `/index.html`（已配置，`/api/*` 交给函数）
+   - SPA 路由：`/*` → `/index.html`（`edgeone.json` 已配置，`/api/*` 交给函数）
 
 ### 步骤三：开通并绑定 KV 命名空间（原生数据库）
 
@@ -80,6 +84,24 @@ EdgeOne Makers 是腾讯云边缘全栈平台：静态资源全球托管，`/fun
 ### 步骤五：触发部署
 
 推送代码或点击控制台「部署」，构建完成后通过预览域名访问即可。之后每次 git push 自动重新部署。
+
+### 备选方式：使用 EdgeOne CLI 本地部署
+
+在 `puzzle-tracker/` 目录下执行（无需配置构建参数，直接上传构建产物与函数）：
+
+```bash
+# 1. 安装 CLI 并登录（控制台生成 API Token）
+npm install -g edgeone
+edgeone login -t <你的API_Token>
+
+# 2. 本地构建前端
+cd client && npm install && npm run build && cd ..
+
+# 3. 部署（自动上传 client/dist 静态资源与 functions/ 函数）
+edgeone makers deploy . -n <项目名>
+```
+
+注意：CLI 部署方式同样需要在控制台为该项目绑定 KV 命名空间（`PUZZLE_KV`）和环境变量 `JWT_SECRET`。
 
 ## API 概览
 
