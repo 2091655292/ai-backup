@@ -1,0 +1,10 @@
+{
+  "name": "puzzle-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "cd client && npm install && npm run build",
+    "dev": "bash ./start.sh"
+  }
+}

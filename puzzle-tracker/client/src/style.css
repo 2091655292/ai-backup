@@ -1,0 +1,51 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --brand: #0a9d8f;
+  --brand-dark: #087f74;
+  --brand-light: #e6f6f4;
+  --bg: #f0f4f7;
+  --card-bg: #ffffff;
+  --text: #1f2d3d;
+  --text-soft: #6b7a8c;
+  --border: #dce4ea;
+  --danger: #e5484d;
+  --gold: #f59e0b;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+}
+
+input {
+  font-family: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c3cfd8;
+  border-radius: 4px;
+}
