@@ -17,6 +17,12 @@ function load() {
   try {
     cache = JSON.parse(fs.readFileSync(dataFile, 'utf8'));
   } catch {
+    // 文件缺失或损坏：损坏时保留一份 .bak 供人工恢复，避免静默丢数据
+    try {
+      fs.copyFileSync(dataFile, dataFile + '.bak');
+    } catch {
+      /* 文件不存在则跳过 */
+    }
     cache = {};
   }
   return cache;
@@ -25,7 +31,11 @@ function load() {
 export function createLocalStore() {
   const data = load();
   const save = () => {
-    fs.writeFileSync(dataFile, JSON.stringify(data));
+    // 先写临时文件再 rename，rename 在同一文件系统上是原子操作，
+    // 即使写入中途进程崩溃也不会留下损坏的半截 JSON。
+    const tmp = dataFile + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(data));
+    fs.renameSync(tmp, dataFile);
   };
   return {
     get: async (key) => (key in data ? data[key] : null),

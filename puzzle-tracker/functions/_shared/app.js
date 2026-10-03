@@ -39,15 +39,34 @@ async function kvPut(store, key, value) {
   return store.put(key, value);
 }
 
-async function kvDel(store, key) {
-  return store.del(key);
+const userDataKey = (userId) => `userdata_${userId}`;
+
+// 每个用户的所有卡片数据收敛为单一 key，读写是完整原子单元，
+// 避免列表与详情跨 key 不一致，以及 read-modify-write 的丢写问题。
+async function getUserData(store, userId) {
+  const raw = await kvGet(store, userDataKey(userId));
+  if (raw) return JSON.parse(raw);
+  const listRaw = await kvGet(store, `cards_${userId}`);
+  if (!listRaw) return { seq: 0, list: [] };
+  const old = JSON.parse(listRaw);
+  const rec = { seq: old.seq || 0, list: [] };
+  for (const c of old.list || []) {
+    const dRaw = await kvGet(store, `card_${userId}_${c.id}`);
+    const d = dRaw ? JSON.parse(dRaw) : null;
+    rec.list.push({
+      id: c.id,
+      name: (d && d.name) || c.name,
+      note: (d && d.note) || c.note || '',
+      createdAt: (d && d.createdAt) || c.createdAt,
+      pieces: (d && d.pieces) || {},
+    });
+  }
+  await kvPut(store, userDataKey(userId), JSON.stringify(rec));
+  return rec;
 }
 
-async function nextSeq(store, key) {
-  const cur = Number(await kvGet(store, key)) || 0;
-  const next = cur + 1;
-  await kvPut(store, key, String(next));
-  return next;
+async function putUserData(store, userId, rec) {
+  await kvPut(store, userDataKey(userId), JSON.stringify(rec));
 }
 
 async function getUserById(store, id) {
@@ -59,16 +78,6 @@ async function getUserByUsername(store, username) {
   const id = await kvGet(store, `un_${hexEncode(username)}`);
   if (!id) return null;
   return getUserById(store, id);
-}
-
-async function getCardsRecord(store, userId) {
-  const raw = await kvGet(store, `cards_${userId}`);
-  return raw ? JSON.parse(raw) : { seq: 0, list: [] };
-}
-
-async function getCard(store, userId, cardId) {
-  const raw = await kvGet(store, `card_${userId}_${cardId}`);
-  return raw ? JSON.parse(raw) : null;
 }
 
 function computePuzzleSummary(pieces) {
@@ -112,12 +121,13 @@ async function register(request, store, env) {
   if (pwd.length < 4 || pwd.length > 72) return fail('密码长度需为 4-72 位');
   if (await getUserByUsername(store, uname)) return fail('用户名已被注册', 409);
   const passwordHash = await hashPassword(pwd);
-  const id = await nextSeq(store, 'seq_user');
+  // 用户 id 用时间戳+随机串生成，避免自增 seq 在并发注册时的竞态冲突
+  const id = `u${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const now = new Date().toISOString();
   const user = { id, username: uname, passwordHash, nickname: String(nickname || '').trim(), createdAt: now };
   await kvPut(store, `user_${id}`, JSON.stringify(user));
   await kvPut(store, `un_${hexEncode(uname)}`, String(id));
-  await kvPut(store, `cards_${id}`, JSON.stringify({ seq: 0, list: [] }));
+  await kvPut(store, userDataKey(id), JSON.stringify({ seq: 0, list: [] }));
   const token = await signToken({ sub: id }, getJwtSecret(env));
   return json({ token, user: publicUser(user) }, 201);
 }
@@ -133,20 +143,15 @@ async function login(request, store, env) {
 }
 
 async function listCards(store, user) {
-  const rec = await getCardsRecord(store, user.id);
-  const cards = [];
-  for (const c of rec.list) {
-    const data = await getCard(store, user.id, c.id);
-    const pieces = data ? data.pieces : {};
-    cards.push({
-      id: c.id,
-      name: c.name,
-      note: c.note,
-      created_at: c.createdAt,
-      counts: pieces,
-      puzzleSummary: computePuzzleSummary(pieces),
-    });
-  }
+  const rec = await getUserData(store, user.id);
+  const cards = rec.list.map((c) => ({
+    id: c.id,
+    name: c.name,
+    note: c.note,
+    created_at: c.createdAt,
+    counts: c.pieces,
+    puzzleSummary: computePuzzleSummary(c.pieces),
+  }));
   cards.sort((a, b) => b.id - a.id);
   return json({ cards });
 }
@@ -156,57 +161,74 @@ async function createCard(request, store, user) {
   const cname = String(name || '').trim();
   if (!cname) return fail('卡片名称不能为空');
   if (cname.length > 30) return fail('卡片名称过长');
-  const rec = await getCardsRecord(store, user.id);
+  const rec = await getUserData(store, user.id);
   const id = rec.seq + 1;
   rec.seq = id;
   const now = new Date().toISOString();
-  const item = { id, name: cname, note: String(note || '').trim(), createdAt: now };
+  const item = { id, name: cname, note: String(note || '').trim(), createdAt: now, pieces: {} };
   rec.list.push(item);
-  await kvPut(store, `cards_${user.id}`, JSON.stringify(rec));
-  await kvPut(store, `card_${user.id}_${id}`, JSON.stringify({ name: cname, note: item.note, createdAt: now, pieces: {} }));
+  await putUserData(store, user.id, rec);
   return json({
     card: { id, name: cname, note: item.note, created_at: now, counts: {}, puzzleSummary: computePuzzleSummary({}) },
   }, 201);
 }
 
 async function updateCard(request, store, user, cardId) {
-  const rec = await getCardsRecord(store, user.id);
+  const rec = await getUserData(store, user.id);
   const item = rec.list.find((c) => c.id === Number(cardId));
   if (!item) return fail('卡片不存在', 404);
-  const data = (await getCard(store, user.id, item.id)) || { name: item.name, note: item.note, createdAt: item.createdAt, pieces: {} };
   const { name, note } = await parseBody(request);
   if (name !== undefined) item.name = String(name).trim().slice(0, 30);
-  if (note !== undefined) data.note = String(note).trim().slice(0, 200);
-  data.name = item.name;
-  await kvPut(store, `cards_${user.id}`, JSON.stringify(rec));
-  await kvPut(store, `card_${user.id}_${item.id}`, JSON.stringify(data));
+  if (note !== undefined) item.note = String(note).trim().slice(0, 200);
+  await putUserData(store, user.id, rec);
   return json({ ok: true });
 }
 
 async function deleteCard(store, user, cardId) {
-  const rec = await getCardsRecord(store, user.id);
+  const rec = await getUserData(store, user.id);
   const idx = rec.list.findIndex((c) => c.id === Number(cardId));
   if (idx < 0) return fail('卡片不存在', 404);
   rec.list.splice(idx, 1);
-  await kvPut(store, `cards_${user.id}`, JSON.stringify(rec));
-  await kvDel(store, `card_${user.id}_${cardId}`);
+  await putUserData(store, user.id, rec);
   return json({ ok: true });
 }
 
+function normalizePieces(pieces) {
+  const out = {};
+  for (const k of Object.keys(pieces || {})) {
+    const m = /^([123]):(\d+)$/.exec(k);
+    if (!m) continue;
+    const p = Number(m[1]);
+    const s = Number(m[2]);
+    if (!PUZZLE_SIZES[p] || s < 0 || s >= PUZZLE_SIZES[p]) continue;
+    const n = Number(pieces[k]);
+    if (Number.isInteger(n) && n > 0) out[k] = n;
+  }
+  return out;
+}
+
 async function setPiece(request, store, user, cardId, puzzleStr, slotStr) {
-  const rec = await getCardsRecord(store, user.id);
+  const rec = await getUserData(store, user.id);
   const item = rec.list.find((c) => c.id === Number(cardId));
   if (!item) return fail('卡片不存在', 404);
+  const body = await parseBody(request);
+  // 优先整体替换 pieces：客户端提交完整快照，服务端不读旧值，
+  // 从根本上避免最终一致性 KV 上 read-modify-write 导致的丢写。
+  if (body && body.pieces && typeof body.pieces === 'object') {
+    item.pieces = normalizePieces(body.pieces);
+    await putUserData(store, user.id, rec);
+    return json({ ok: true });
+  }
   const puzzle = Number(puzzleStr);
   const slot = Number(slotStr);
   if (!PUZZLE_SIZES[puzzle] || slot < 0 || slot >= PUZZLE_SIZES[puzzle]) {
     return fail('拼图或位置参数无效');
   }
-  let count = Number((await parseBody(request)).count);
+  const count = Number(body.count);
   if (!Number.isInteger(count) || count < 0 || count > 99) return fail('数量需为 0-99 的整数');
-  const data = (await getCard(store, user.id, item.id)) || { name: item.name, note: item.note, createdAt: item.createdAt, pieces: {} };
-  data.pieces[`${puzzle}:${slot}`] = count;
-  await kvPut(store, `card_${user.id}_${item.id}`, JSON.stringify(data));
+  if (count > 0) item.pieces[`${puzzle}:${slot}`] = count;
+  else delete item.pieces[`${puzzle}:${slot}`];
+  await putUserData(store, user.id, rec);
   return json({ ok: true });
 }
 

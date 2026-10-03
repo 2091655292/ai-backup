@@ -51,5 +51,6 @@ export const api = {
   createCard: (body) => request('POST', '/cards', body),
   updateCard: (id, body) => request('PATCH', `/cards/${id}`, body),
   deleteCard: (id) => request('DELETE', `/cards/${id}`),
-  setPiece: (cardId, puzzle, slot, count) => request('PUT', `/cards/${cardId}/pieces/${puzzle}/${slot}`, { count }),
+  setPiece: (cardId, puzzle, slot, count, pieces) =>
+    request('PUT', `/cards/${cardId}/pieces/${puzzle}/${slot}`, { count, pieces }),
 };

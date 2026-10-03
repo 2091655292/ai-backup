@@ -111,7 +111,7 @@ async function onPieceChange(puzzleNo, slot, count) {
   selectedCard.value.counts[`${puzzleNo}:${slot}`] = count;
   recompute(selectedCard.value);
   try {
-    await api.setPiece(selectedCard.value.id, puzzleNo, slot, count);
+    await api.setPiece(selectedCard.value.id, puzzleNo, slot, count, selectedCard.value.counts);
   } catch (e) {
     showToast(e.message);
   }
