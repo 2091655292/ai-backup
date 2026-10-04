@@ -47,5 +47,11 @@ export function createLocalStore() {
       delete data[key];
       save();
     },
+    putIfAbsent: async (key, value) => {
+      if (key in data) return false;
+      data[key] = String(value);
+      save();
+      return true;
+    },
   };
 }

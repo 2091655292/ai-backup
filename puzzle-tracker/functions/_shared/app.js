@@ -124,14 +124,14 @@ async function register(request, store, env) {
     return fail('用户名需为 2-30 位字母、数字、下划线或中文');
   }
   if (pwd.length < 4 || pwd.length > 72) return fail('密码长度需为 4-72 位');
-  if (await getUserByUsername(store, uname)) return fail('用户名已被注册', 409);
-  const passwordHash = await hashPassword(pwd);
-  // 用户 id 用时间戳+随机串生成，避免自增 seq 在并发注册时的竞态冲突
+  // 原子抢占用户名索引：Postgres 用 ON CONFLICT DO NOTHING，KV 退化为先查后写
   const id = `u${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const claimed = await store.putIfAbsent(`un_${hexEncode(uname)}`, String(id));
+  if (!claimed) return fail('用户名已被注册', 409);
+  const passwordHash = await hashPassword(pwd);
   const now = new Date().toISOString();
   const user = { id, username: uname, passwordHash, nickname: String(nickname || '').trim(), createdAt: now };
   await kvPut(store, `user_${id}`, JSON.stringify(user));
-  await kvPut(store, `un_${hexEncode(uname)}`, String(id));
   await kvPut(store, userDataKey(id), JSON.stringify({ rev: 0, seq: 0, list: [] }));
   const token = await signToken({ sub: id }, getJwtSecret(env));
   return json({ token, user: publicUser(user) }, 201);

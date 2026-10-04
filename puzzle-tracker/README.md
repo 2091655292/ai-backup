@@ -16,21 +16,30 @@
 ## 技术栈
 
 - 前端：Vue 3 + Vite（构建产物 `client/dist`）
-- 后端：EdgeOne Pages Functions（`functions/` 目录，边缘 Serverless）
-- 存储：**EdgeOne KV 存储**（Makers 原生数据库，命名空间绑定）
+- 后端：Web 标准请求/响应处理逻辑（`functions/_shared/app.js`），可运行在两种平台：
+  - **EdgeOne Pages Functions**（`functions/` 目录）
+  - **Vercel Edge Functions**（`api/` 目录）
+- 存储：**EdgeOne KV** 或 **Vercel Postgres（Neon）**，通过存储适配器切换，业务代码零改动
 - 认证：PBKDF2 密码哈希 + JWT（基于 Web Crypto，零第三方依赖，前后端共享同一份代码）
 
 ## 目录结构
 
 ```
 .
-├── functions/            # EdgeOne Pages Functions 后端
-│   ├── api/[[default]].js    # /api/* 入口
-│   └── _shared/              # 共享业务逻辑（crypto / store / app）
+├── functions/            # 共享后端 + EdgeOne Pages Functions
+│   ├── api/[[default]].js    # EdgeOne /api/* 入口
+│   └── _shared/              # 共享业务逻辑
+│       ├── app.js               # 路由与业务逻辑（两平台共用）
+│       ├── crypto.js            # PBKDF2 / JWT
+│       ├── store.js             # EdgeOne KV 适配器
+│       └── pg-store.js          # Vercel Postgres（Neon）适配器
+├── api/[...path].js      # Vercel Edge Function /api/* 入口
 ├── client/               # Vue 3 前端（构建到 client/dist）
 ├── server/               # 本地开发后端（复用 functions/_shared 逻辑）
 │   └── local-store.js        # 本地文件持久化 KV（server/data/kv.json）
+├── scripts/init-db.mjs   # Vercel Postgres 建表脚本
 ├── edgeone.json          # EdgeOne Makers 平台配置
+├── vercel.json           # Vercel 构建与路由配置
 └── start.sh              # 本地开发一键启动
 ```
 
@@ -102,6 +111,51 @@ edgeone makers deploy . -n <项目名>
 ```
 
 注意：CLI 部署方式同样需要在控制台为该项目绑定 KV 命名空间（`PUZZLE_KV`）和环境变量 `JWT_SECRET`。
+
+## 部署到 Vercel（使用 Vercel Postgres）
+
+Vercel 部署使用 **Edge Function**（`api/[...path].js`）+ **Vercel Postgres（Neon 原生集成）**。相比边缘 KV，Postgres 是强一致数据库，读写无传播延迟，不会出现「删除后复活、新增后消失」。
+
+> Vercel 已将 Postgres 迁移为 Neon 原生集成，底层驱动为 `@neondatabase/serverless`（已在根 `package.json` 声明）。
+
+### 步骤一：导入仓库
+
+在 Vercel 控制台 **Add New → Project** 导入本仓库，并设置：
+
+- **Root Directory**：`puzzle-tracker`
+- **Framework Preset**：Vite（若未自动识别，手动选择）
+- **Build Command**：`npm run build`
+- **Output Directory**：`client/dist`
+
+### 步骤二：创建 Postgres 数据库
+
+进入项目 **Storage → Create Database → Postgres（Neon）**，创建后连接串会自动注入到项目环境变量（`DATABASE_URL` 等），无需手动复制。
+
+### 步骤三：配置环境变量
+
+| 变量名 | 说明 | 示例 |
+|--------|------|------|
+| `JWT_SECRET` | JWT 签名密钥，**必须设置**为强随机值，否则使用公开的默认密钥存在安全风险 | `openssl rand -hex 32` 生成 |
+
+### 步骤四：初始化数据表并部署
+
+在本地拉取环境变量后建表，或直接部署（函数首次请求也会自动建表）：
+
+```bash
+vercel env pull .env.local
+npm run db:init
+```
+
+然后点击 **Deploy**（或 push 代码触发）。部署完成后访问分配域名即可。
+
+### 存储适配说明
+
+两套后端共用 `functions/_shared/app.js`，仅存储适配器不同：
+
+- EdgeOne：`functions/_shared/store.js`（EdgeOne KV）
+- Vercel：`functions/_shared/pg-store.js`（Postgres 单表 `app_kv(key, value)`）
+
+Postgres 侧用主键约束原子抢占用户名索引，注册并发不会重名。**EdgeOne 部署方式完全保留**，两者可并行使用。
 
 ## API 概览
 
