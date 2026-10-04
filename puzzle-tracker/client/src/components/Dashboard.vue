@@ -59,17 +59,26 @@ function snapshotList() {
   }));
 }
 
-// 全量快照同步：以本地最新状态整体覆盖云端，服务端不再读旧值改写，
-// 从根上避免最终一致性 KV 撤销用户的增删操作。
-async function syncAll() {
+// 串行化同步：并发操作按序执行全量快照同步，避免旧 rev 请求互相 409
+let syncQueue = Promise.resolve();
+
+function syncAll() {
+  const run = syncQueue.then(doSyncAll);
+  syncQueue = run.catch(() => {});
+  return run;
+}
+
+async function doSyncAll() {
   const rev = Date.now();
   try {
     await api.syncData({ rev, list: snapshotList() });
     writeCache(rev, cards.value);
   } catch (e) {
-    if (e.status === 409) {
-      localStorage.removeItem(cacheKey);
-      await load();
+    if (e.status === 409 && e.data && Array.isArray(e.data.cards)) {
+      // 本地版本过期（其他设备或旧接口写入更新）：直接采纳服务端返回的最新数据
+      cards.value = e.data.cards;
+      ensureSelection();
+      writeCache(e.data.rev || 0, cards.value);
     } else {
       showToast(e.message);
     }

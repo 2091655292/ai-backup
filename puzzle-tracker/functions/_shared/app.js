@@ -147,8 +147,7 @@ async function login(request, store, env) {
   return json({ token, user: publicUser(user) });
 }
 
-async function listCards(store, user) {
-  const rec = await getUserData(store, user.id);
+function cardsPayload(rec) {
   const cards = rec.list.map((c) => ({
     id: c.id,
     name: c.name,
@@ -158,7 +157,12 @@ async function listCards(store, user) {
     puzzleSummary: computePuzzleSummary(c.pieces),
   }));
   cards.sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0));
-  return json({ rev: rec.rev || 0, cards });
+  return cards;
+}
+
+async function listCards(store, user) {
+  const rec = await getUserData(store, user.id);
+  return json({ rev: rec.rev || 0, cards: cardsPayload(rec) });
 }
 
 async function createCard(request, store, user) {
@@ -202,15 +206,16 @@ async function deleteCard(store, user, cardId) {
 }
 
 function normalizePieces(pieces) {
+  if (!pieces || typeof pieces !== 'object' || Array.isArray(pieces)) return {};
   const out = {};
-  for (const k of Object.keys(pieces || {})) {
+  for (const k of Object.keys(pieces)) {
     const m = /^([123]):(\d+)$/.exec(k);
     if (!m) continue;
     const p = Number(m[1]);
     const s = Number(m[2]);
     if (!PUZZLE_SIZES[p] || s < 0 || s >= PUZZLE_SIZES[p]) continue;
     const n = Number(pieces[k]);
-    if (Number.isInteger(n) && n > 0) out[k] = n;
+    if (Number.isInteger(n) && n > 0 && n <= 99) out[k] = n;
   }
   return out;
 }
@@ -261,14 +266,24 @@ async function syncData(request, store, user) {
   const rawList = body.list;
   if (!Array.isArray(rawList) || rawList.length > 100) return fail('卡片数据无效');
   const list = [];
+  const seen = new Set();
   for (const raw of rawList) {
     const item = normalizeCardItem(raw);
-    if (!item) return fail('卡片数据无效');
+    if (!item || seen.has(item.id)) return fail('卡片数据无效');
+    seen.add(item.id);
     list.push(item);
   }
   const cur = await getUserData(store, user.id);
-  if ((cur.rev || 0) > rev) return fail('数据版本过期，请刷新页面后重试', 409);
-  await putUserData(store, user.id, { rev, seq: Math.max(cur.seq || 0, list.length), list });
+  if ((cur.rev || 0) > rev) {
+    // 携带云端最新数据返回，客户端直接采纳，避免再发一次请求
+    return json({ error: '数据版本过期，已为你恢复最新数据', rev: cur.rev || 0, cards: cardsPayload(cur) }, 409);
+  }
+  // seq 取历史最大数字 id，避免删除卡片后自增 id 回退导致与旧接口冲突
+  let maxNumericId = cur.seq || 0;
+  for (const c of list) {
+    if (/^\d+$/.test(c.id)) maxNumericId = Math.max(maxNumericId, Number(c.id));
+  }
+  await putUserData(store, user.id, { rev, seq: maxNumericId, list });
   return json({ ok: true, rev });
 }
 

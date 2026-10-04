@@ -40,6 +40,7 @@ async function request(method, url, body) {
     }
     const err = new Error(data?.error || `请求失败(${res.status})`);
     err.status = res.status;
+    err.data = data;
     throw err;
   }
   return data;

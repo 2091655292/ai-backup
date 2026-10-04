@@ -114,7 +114,8 @@ edgeone makers deploy . -n <项目名>
 | POST | /api/cards | 添加卡片 |
 | PATCH | /api/cards/:id | 修改卡片 |
 | DELETE | /api/cards/:id | 删除卡片 |
-| PUT | /api/cards/:id/pieces/:puzzle/:slot | 设置某片数量 |
+| PUT | /api/cards/:id/pieces/:puzzle/:slot | 设置某片数量（兼容旧客户端） |
+| PUT | /api/data | 全量同步用户数据（含版本号 rev，客户端快照整体覆盖） |
 
 ## 自建服务器部署（可选）
 
