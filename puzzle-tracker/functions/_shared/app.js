@@ -45,11 +45,16 @@ const userDataKey = (userId) => `userdata_${userId}`;
 // 避免列表与详情跨 key 不一致，以及 read-modify-write 的丢写问题。
 async function getUserData(store, userId) {
   const raw = await kvGet(store, userDataKey(userId));
-  if (raw) return JSON.parse(raw);
+  if (raw) {
+    const rec = JSON.parse(raw);
+    if (!Number.isInteger(rec.rev)) rec.rev = 0;
+    return rec;
+  }
   const listRaw = await kvGet(store, `cards_${userId}`);
-  if (!listRaw) return { seq: 0, list: [] };
+  if (!listRaw) return { rev: 0, seq: 0, list: [] };
   const old = JSON.parse(listRaw);
-  const rec = { seq: old.seq || 0, list: [] };
+  // rev=1 为迁移哨兵值：重复迁移内容一致且总是被真实用户写入盖过，避免旧状态复活
+  const rec = { rev: 1, seq: old.seq || 0, list: [] };
   for (const c of old.list || []) {
     const dRaw = await kvGet(store, `card_${userId}_${c.id}`);
     const d = dRaw ? JSON.parse(dRaw) : null;
@@ -127,7 +132,7 @@ async function register(request, store, env) {
   const user = { id, username: uname, passwordHash, nickname: String(nickname || '').trim(), createdAt: now };
   await kvPut(store, `user_${id}`, JSON.stringify(user));
   await kvPut(store, `un_${hexEncode(uname)}`, String(id));
-  await kvPut(store, userDataKey(id), JSON.stringify({ seq: 0, list: [] }));
+  await kvPut(store, userDataKey(id), JSON.stringify({ rev: 0, seq: 0, list: [] }));
   const token = await signToken({ sub: id }, getJwtSecret(env));
   return json({ token, user: publicUser(user) }, 201);
 }
@@ -152,8 +157,8 @@ async function listCards(store, user) {
     counts: c.pieces,
     puzzleSummary: computePuzzleSummary(c.pieces),
   }));
-  cards.sort((a, b) => b.id - a.id);
-  return json({ cards });
+  cards.sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0));
+  return json({ rev: rec.rev || 0, cards });
 }
 
 async function createCard(request, store, user) {
@@ -167,6 +172,7 @@ async function createCard(request, store, user) {
   const now = new Date().toISOString();
   const item = { id, name: cname, note: String(note || '').trim(), createdAt: now, pieces: {} };
   rec.list.push(item);
+  rec.rev = Date.now();
   await putUserData(store, user.id, rec);
   return json({
     card: { id, name: cname, note: item.note, created_at: now, counts: {}, puzzleSummary: computePuzzleSummary({}) },
@@ -175,20 +181,22 @@ async function createCard(request, store, user) {
 
 async function updateCard(request, store, user, cardId) {
   const rec = await getUserData(store, user.id);
-  const item = rec.list.find((c) => c.id === Number(cardId));
+  const item = rec.list.find((c) => String(c.id) === cardId);
   if (!item) return fail('卡片不存在', 404);
   const { name, note } = await parseBody(request);
   if (name !== undefined) item.name = String(name).trim().slice(0, 30);
   if (note !== undefined) item.note = String(note).trim().slice(0, 200);
+  rec.rev = Date.now();
   await putUserData(store, user.id, rec);
   return json({ ok: true });
 }
 
 async function deleteCard(store, user, cardId) {
   const rec = await getUserData(store, user.id);
-  const idx = rec.list.findIndex((c) => c.id === Number(cardId));
+  const idx = rec.list.findIndex((c) => String(c.id) === cardId);
   if (idx < 0) return fail('卡片不存在', 404);
   rec.list.splice(idx, 1);
+  rec.rev = Date.now();
   await putUserData(store, user.id, rec);
   return json({ ok: true });
 }
@@ -209,7 +217,7 @@ function normalizePieces(pieces) {
 
 async function setPiece(request, store, user, cardId, puzzleStr, slotStr) {
   const rec = await getUserData(store, user.id);
-  const item = rec.list.find((c) => c.id === Number(cardId));
+  const item = rec.list.find((c) => String(c.id) === cardId);
   if (!item) return fail('卡片不存在', 404);
   const body = await parseBody(request);
   // 优先整体替换 pieces：客户端提交完整快照，服务端不读旧值，
@@ -228,8 +236,40 @@ async function setPiece(request, store, user, cardId, puzzleStr, slotStr) {
   if (!Number.isInteger(count) || count < 0 || count > 99) return fail('数量需为 0-99 的整数');
   if (count > 0) item.pieces[`${puzzle}:${slot}`] = count;
   else delete item.pieces[`${puzzle}:${slot}`];
+  rec.rev = Date.now();
   await putUserData(store, user.id, rec);
   return json({ ok: true });
+}
+
+// 客户端权威的全量快照同步：前端提交整份用户数据与版本号，
+// 服务端直接覆盖写，彻底绕开最终一致性 KV 上 read-modify-write 撤销用户操作的问题。
+function normalizeCardItem(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const id = String(raw.id ?? '').slice(0, 64);
+  if (!id) return null;
+  const name = String(raw.name ?? '').trim().slice(0, 30) || '未命名';
+  const note = String(raw.note ?? '').trim().slice(0, 200);
+  const createdAt = String(raw.createdAt ?? raw.created_at ?? '');
+  const pieces = normalizePieces(raw.pieces ?? raw.counts);
+  return { id, name, note, createdAt, pieces };
+}
+
+async function syncData(request, store, user) {
+  const body = await parseBody(request);
+  const rev = Number(body && body.rev);
+  if (!Number.isInteger(rev) || rev <= 0) return fail('数据版本无效');
+  const rawList = body.list;
+  if (!Array.isArray(rawList) || rawList.length > 100) return fail('卡片数据无效');
+  const list = [];
+  for (const raw of rawList) {
+    const item = normalizeCardItem(raw);
+    if (!item) return fail('卡片数据无效');
+    list.push(item);
+  }
+  const cur = await getUserData(store, user.id);
+  if ((cur.rev || 0) > rev) return fail('数据版本过期，请刷新页面后重试', 409);
+  await putUserData(store, user.id, { rev, seq: Math.max(cur.seq || 0, list.length), list });
+  return json({ ok: true, rev });
 }
 
 export async function handleApiRequest(request, store, { env } = {}) {
@@ -251,13 +291,17 @@ export async function handleApiRequest(request, store, { env } = {}) {
       if (method === 'POST') return requireAuth(store, request, env, (user) => createCard(request, store, user));
     }
 
-    let m = path.match(/^\/api\/cards\/(\d+)$/);
+    if (method === 'PUT' && path === '/api/data') {
+      return requireAuth(store, request, env, (user) => syncData(request, store, user));
+    }
+
+    let m = path.match(/^\/api\/cards\/([A-Za-z0-9_-]+)$/);
     if (m) {
       if (method === 'PATCH') return requireAuth(store, request, env, (user) => updateCard(request, store, user, m[1]));
       if (method === 'DELETE') return requireAuth(store, request, env, (user) => deleteCard(store, user, m[1]));
     }
 
-    m = path.match(/^\/api\/cards\/(\d+)\/pieces\/(\d+)\/(\d+)$/);
+    m = path.match(/^\/api\/cards\/([A-Za-z0-9_-]+)\/pieces\/(\d+)\/(\d+)$/);
     if (m && method === 'PUT') {
       return requireAuth(store, request, env, (user) => setPiece(request, store, user, m[1], m[2], m[3]));
     }

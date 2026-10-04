@@ -38,7 +38,9 @@ async function request(method, url, body) {
       clearToken();
       window.location.reload();
     }
-    throw new Error(data?.error || `请求失败(${res.status})`);
+    const err = new Error(data?.error || `请求失败(${res.status})`);
+    err.status = res.status;
+    throw err;
   }
   return data;
 }
@@ -51,6 +53,5 @@ export const api = {
   createCard: (body) => request('POST', '/cards', body),
   updateCard: (id, body) => request('PATCH', `/cards/${id}`, body),
   deleteCard: (id) => request('DELETE', `/cards/${id}`),
-  setPiece: (cardId, puzzle, slot, count, pieces) =>
-    request('PUT', `/cards/${cardId}/pieces/${puzzle}/${slot}`, { count, pieces }),
+  syncData: (body) => request('PUT', '/data', body),
 };

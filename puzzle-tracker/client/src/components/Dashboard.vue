@@ -28,16 +28,73 @@ function showToast(msg) {
   setTimeout(() => (toast.value = ''), 1800);
 }
 
+const cacheKey = `puzzle_cards_cache_${props.user.id}`;
+
+function readCache() {
+  try {
+    const v = JSON.parse(localStorage.getItem(cacheKey));
+    return v && Array.isArray(v.cards) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCache(rev, list) {
+  localStorage.setItem(cacheKey, JSON.stringify({ rev, cards: list }));
+}
+
+function ensureSelection() {
+  if (!cards.value.some((c) => c.id === selectedId.value)) {
+    selectedId.value = cards.value[0]?.id ?? null;
+  }
+}
+
+function snapshotList() {
+  return cards.value.map((c) => ({
+    id: c.id,
+    name: c.name,
+    note: c.note,
+    createdAt: c.created_at,
+    pieces: c.counts,
+  }));
+}
+
+// 全量快照同步：以本地最新状态整体覆盖云端，服务端不再读旧值改写，
+// 从根上避免最终一致性 KV 撤销用户的增删操作。
+async function syncAll() {
+  const rev = Date.now();
+  try {
+    await api.syncData({ rev, list: snapshotList() });
+    writeCache(rev, cards.value);
+  } catch (e) {
+    if (e.status === 409) {
+      localStorage.removeItem(cacheKey);
+      await load();
+    } else {
+      showToast(e.message);
+    }
+  }
+}
+
 async function load() {
-  loading.value = true;
+  const cached = readCache();
+  if (cached) {
+    cards.value = cached.cards;
+    ensureSelection();
+    loading.value = false;
+  }
   try {
     const data = await api.listCards();
-    cards.value = data.cards;
-    if (!cards.value.some((c) => c.id === selectedId.value)) {
-      selectedId.value = cards.value[0]?.id ?? null;
+    if (!cached || (data.rev || 0) >= (cached.rev || 0)) {
+      cards.value = data.cards;
+      writeCache(data.rev || 0, data.cards);
+    } else {
+      // 云端落后于本地缓存（KV 传播延迟或旧快照覆盖）：回推本地新状态自我修复
+      await syncAll();
     }
+    ensureSelection();
   } catch (e) {
-    showToast(e.message);
+    if (!cached) showToast(e.message);
   } finally {
     loading.value = false;
   }
@@ -54,13 +111,22 @@ async function addCard() {
   if (!name) return;
   saving.value = true;
   try {
-    const data = await api.createCard({ name, note: addNote.value.trim() });
-    cards.value.unshift(data.card);
-    selectedId.value = data.card.id;
+    const card = {
+      id: `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      name,
+      note: addNote.value.trim(),
+      created_at: new Date().toISOString(),
+      counts: {},
+      puzzleSummary: {},
+    };
+    recompute(card);
+    cards.value.unshift(card);
+    selectedId.value = card.id;
     addName.value = '';
     addNote.value = '';
     showAdd.value = false;
     showToast('卡片已添加');
+    await syncAll();
   } catch (e) {
     showToast(e.message);
   } finally {
@@ -70,16 +136,12 @@ async function addCard() {
 
 async function removeCard(card) {
   if (!confirm(`确定删除卡片「${card.name}」吗？其拼图记录将一并删除。`)) return;
-  try {
-    await api.deleteCard(card.id);
-    cards.value = cards.value.filter((c) => c.id !== card.id);
-    if (selectedId.value === card.id) {
-      selectedId.value = cards.value[0]?.id ?? null;
-    }
-    showToast('已删除');
-  } catch (e) {
-    showToast(e.message);
+  cards.value = cards.value.filter((c) => c.id !== card.id);
+  if (selectedId.value === card.id) {
+    selectedId.value = cards.value[0]?.id ?? null;
   }
+  showToast('已删除');
+  await syncAll();
 }
 
 function cardSummary(card) {
@@ -110,11 +172,7 @@ async function onPieceChange(puzzleNo, slot, count) {
   if (!selectedCard.value) return;
   selectedCard.value.counts[`${puzzleNo}:${slot}`] = count;
   recompute(selectedCard.value);
-  try {
-    await api.setPiece(selectedCard.value.id, puzzleNo, slot, count, selectedCard.value.counts);
-  } catch (e) {
-    showToast(e.message);
-  }
+  await syncAll();
 }
 
 function logout() {
