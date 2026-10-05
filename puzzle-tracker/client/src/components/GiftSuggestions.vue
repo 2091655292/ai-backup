@@ -11,6 +11,20 @@ const emit = defineEmits(['apply']);
 
 const puzzleNos = [1, 2, 3];
 
+function prevComplete(card, pn) {
+  return card.puzzleSummary?.[pn - 1]?.complete === true;
+}
+
+function ownsAny(card, pn) {
+  const prefix = `${pn}:`;
+  return Object.entries(card.counts || {}).some(([k, v]) => k.startsWith(prefix) && v > 0);
+}
+
+function isUnlocked(card, pn) {
+  if (pn === 1) return true;
+  return prevComplete(card, pn) || ownsAny(card, pn);
+}
+
 const suggestions = computed(() => {
   const list = [];
   for (const pn of puzzleNos) {
@@ -20,7 +34,9 @@ const suggestions = computed(() => {
         .map((card) => ({ card, extra: Math.max(0, (card.counts?.[key] || 0) - 1) }))
         .filter((g) => g.extra > 0);
       if (givers.length === 0) continue;
-      const receivers = props.cards.filter((card) => (card.counts?.[key] || 0) === 0);
+      const receivers = props.cards.filter(
+        (card) => (card.counts?.[key] || 0) === 0 && isUnlocked(card, pn),
+      );
       let gi = 0;
       for (const receiver of receivers) {
         while (gi < givers.length && givers[gi].extra <= 0) gi++;
