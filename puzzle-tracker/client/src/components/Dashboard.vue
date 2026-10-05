@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue';
 import { api, puzzles, clearToken } from '../api.js';
 import PuzzleGrid from './PuzzleGrid.vue';
+import GiftSuggestions from './GiftSuggestions.vue';
 
 const emit = defineEmits(['logout']);
 const props = defineProps({ user: { type: Object, required: true } });
@@ -184,6 +185,24 @@ async function onPieceChange(puzzleNo, slot, count) {
   await syncAll();
 }
 
+async function applyGift(item) {
+  const from = cards.value.find((c) => c.id === item.fromId);
+  const to = cards.value.find((c) => c.id === item.toId);
+  if (!from || !to) return;
+  const fromCount = from.counts[item.key] || 0;
+  const toCount = to.counts[item.key] || 0;
+  if (fromCount < 2 || toCount > 0) {
+    showToast('数据已变化，请重试');
+    return;
+  }
+  from.counts[item.key] = fromCount - 1;
+  to.counts[item.key] = toCount + 1;
+  recompute(from);
+  recompute(to);
+  await syncAll();
+  showToast(`已将「${puzzles[item.puzzleNo].name} 第 ${item.slot + 1} 片」赠送给 ${to.name}`);
+}
+
 function logout() {
   clearToken();
   emit('logout');
@@ -249,6 +268,13 @@ function logout() {
       </aside>
 
       <section class="content">
+        <GiftSuggestions
+          v-if="cards.length"
+          :cards="cards"
+          :colors="puzzleColors"
+          @apply="applyGift"
+        />
+
         <div v-if="!selectedCard" class="placeholder">
           <div class="placeholder-icon">🧩</div>
           <p>{{ loading ? '加载中…' : '请选择左侧的卡片开始记录，或先添加一张卡片。' }}</p>
