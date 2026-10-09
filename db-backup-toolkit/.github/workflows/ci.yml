@@ -1,0 +1,155 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shellcheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: ./scripts
+
+  sqlite:
+    runs-on: ubuntu-latest
+    env:
+      DB_TYPE: sqlite
+      DB_FILE: /tmp/app.db
+      BACKUP_TARGETS: local
+      LOCAL_PATH: ${{ github.workspace }}/backups
+      BACKUP_PASSPHRASE: test-passphrase
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/lib/install.sh --db "$DB_TYPE" --targets local
+      - name: Create database
+        run: |
+          sqlite3 /tmp/app.db "CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT);
+          INSERT INTO t(v) VALUES ('hello');"
+      - run: ./scripts/backup.sh && test -n "$(ls -A backups)"
+
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: appdb
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      DB_TYPE: postgres
+      DB_HOST: 127.0.0.1
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: appdb
+      BACKUP_TARGETS: local
+      LOCAL_PATH: ${{ github.workspace }}/backups
+      BACKUP_PASSPHRASE: test-passphrase
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/lib/install.sh --db "$DB_TYPE" --targets local
+      - run: ./scripts/backup.sh && test -n "$(ls -A backups)"
+
+  mysql:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: appdb
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      DB_TYPE: mysql
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASSWORD: root
+      DB_NAME: appdb
+      BACKUP_TARGETS: local
+      LOCAL_PATH: ${{ github.workspace }}/backups
+      BACKUP_PASSPHRASE: test-passphrase
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/lib/install.sh --db "$DB_TYPE" --targets local
+      - run: ./scripts/backup.sh && test -n "$(ls -A backups)"
+
+  mariadb:
+    runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:11
+        env:
+          MARIADB_ROOT_PASSWORD: root
+          MARIADB_DATABASE: appdb
+        ports: ["3307:3306"]
+        options: >-
+          --health-cmd "mariadb-admin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      DB_TYPE: mariadb
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3307
+      DB_USER: root
+      DB_PASSWORD: root
+      DB_NAME: appdb
+      BACKUP_TARGETS: local
+      LOCAL_PATH: ${{ github.workspace }}/backups
+      BACKUP_PASSPHRASE: test-passphrase
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/lib/install.sh --db "$DB_TYPE" --targets local
+      - run: ./scripts/backup.sh && test -n "$(ls -A backups)"
+
+  mongodb:
+    runs-on: ubuntu-latest
+    services:
+      mongodb:
+        image: mongo:7
+        ports: ["27017:27017"]
+    env:
+      DB_TYPE: mongodb
+      DB_URL: mongodb://127.0.0.1:27017/appdb
+      DB_NAME: appdb
+      BACKUP_TARGETS: local
+      LOCAL_PATH: ${{ github.workspace }}/backups
+      BACKUP_PASSPHRASE: test-passphrase
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/lib/install.sh --db "$DB_TYPE" --targets local
+      - run: ./scripts/backup.sh && test -n "$(ls -A backups)"
+
+  redis:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      DB_TYPE: redis
+      DB_HOST: 127.0.0.1
+      DB_PORT: 6379
+      BACKUP_TARGETS: local
+      LOCAL_PATH: ${{ github.workspace }}/backups
+      BACKUP_PASSPHRASE: test-passphrase
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/lib/install.sh --db "$DB_TYPE" --targets local
+      - run: ./scripts/backup.sh && test -n "$(ls -A backups)"

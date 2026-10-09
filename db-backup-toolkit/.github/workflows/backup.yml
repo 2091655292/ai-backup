@@ -1,0 +1,65 @@
+name: Database Backup
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      db_type:
+        description: "Database type"
+        required: true
+        default: "postgres"
+
+concurrency:
+  group: db-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run database backup
+        uses: ./
+        with:
+          db_type: ${{ inputs.db_type || 'postgres' }}
+          db_host: ${{ secrets.DB_HOST }}
+          db_port: ${{ secrets.DB_PORT }}
+          db_user: ${{ secrets.DB_USER }}
+          db_password: ${{ secrets.DB_PASSWORD }}
+          db_name: ${{ secrets.DB_NAME }}
+          db_all: "false"
+
+          # Ship to any combination of targets.
+          targets: "s3,webdav,git"
+
+          # Encrypt before upload. Keep the passphrase safe: without it the
+          # backups are unreadable.
+          backup_passphrase: ${{ secrets.BACKUP_PASSPHRASE }}
+          retention_days: "30"
+
+          s3_bucket: ${{ secrets.S3_BUCKET }}
+          s3_prefix: "db-backups"
+          s3_endpoint: ${{ secrets.S3_ENDPOINT }}
+          s3_region: ${{ secrets.S3_REGION }}
+          aws_access_key_id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws_secret_access_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+          webdav_url: ${{ secrets.WEBDAV_URL }}
+          webdav_user: ${{ secrets.WEBDAV_USER }}
+          webdav_password: ${{ secrets.WEBDAV_PASSWORD }}
+          webdav_path: "db-backups"
+
+          backup_repo: ${{ secrets.BACKUP_REPO }}
+          backup_repo_token: ${{ secrets.BACKUP_REPO_TOKEN }}
+          backup_branch: "db-backups"
+
+      - name: Upload artifact (optional, helps debugging)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-backup
+          path: ${{ runner.temp }}/db-backup-output/*
+          if-no-files-found: ignore
+          retention-days: 7

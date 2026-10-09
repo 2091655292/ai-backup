@@ -1,0 +1,123 @@
+name: "Database Backup"
+description: "Back up PostgreSQL, MySQL, MariaDB, MongoDB, SQLite, Redis, SQL Server or Oracle to S3, WebDAV or a private Git repository."
+author: "db-backup-toolkit"
+
+branding:
+  icon: "database"
+  color: "blue"
+
+inputs:
+  db_type:
+    description: "postgres | mysql | mariadb | mongodb | sqlite | redis | mssql | oracle | custom"
+    required: true
+  db_host: { description: "Database host", required: false }
+  db_port: { description: "Database port", required: false }
+  db_user: { description: "Database user", required: false }
+  db_password: { description: "Database password", required: false }
+  db_name: { description: "Database name", required: false }
+  db_url: { description: "Full connection string / URL (overrides host/port/user)", required: false }
+  db_file: { description: "Path to SQLite file (db_type=sqlite)", required: false }
+  db_all: { description: "Dump every database on the server (true/false)", required: false, default: "false" }
+  db_dump_command:
+    description: "Custom shell command writing files into $RAW_DIR (db_type=custom or to override)"
+    required: false
+
+  targets:
+    description: "Comma separated list: local,s3,webdav,git"
+    required: false
+    default: "local"
+  compress_format:
+    description: "tar.gz or tar.zst"
+    required: false
+    default: "tar.gz"
+  retention_days:
+    description: "Delete backups older than N days on each target (0 = keep forever)"
+    required: false
+    default: "0"
+
+  backup_passphrase:
+    description: "Symmetric GPG passphrase used to encrypt artifacts"
+    required: false
+  age_recipient:
+    description: "age public key used to encrypt artifacts"
+    required: false
+
+  s3_bucket: { description: "S3 bucket name", required: false }
+  s3_prefix: { description: "Key prefix inside the bucket", required: false, default: "db-backups" }
+  s3_endpoint: { description: "Custom S3 endpoint (R2, MinIO, Wasabi...)", required: false }
+  s3_region: { description: "S3 region", required: false }
+  aws_access_key_id: { description: "AWS access key id", required: false }
+  aws_secret_access_key: { description: "AWS secret access key", required: false }
+
+  webdav_url: { description: "WebDAV base URL", required: false }
+  webdav_user: { description: "WebDAV username", required: false }
+  webdav_password: { description: "WebDAV password", required: false }
+  webdav_path: { description: "Directory inside the WebDAV share", required: false, default: "db-backups" }
+  webdav_vendor: { description: "rclone WebDAV vendor (nextcloud, owncloud, other)", required: false, default: "other" }
+
+  backup_repo: { description: "owner/repo of the private repository for DB backups", required: false }
+  backup_repo_token: { description: "Token with write access to backup_repo", required: false }
+  backup_branch: { description: "Branch used for backups", required: false, default: "db-backups" }
+  git_prefix: { description: "Directory inside the backup branch", required: false, default: "backups" }
+  git_squash: { description: "Force-push a single commit to avoid history bloat", required: false, default: "true" }
+
+  install_clients:
+    description: "Install required client tools on the runner"
+    required: false
+    default: "true"
+
+outputs:
+  artifact_name:
+    description: "File name of the produced backup"
+    value: ${{ steps.backup.outputs.artifact_name }}
+  artifact_path:
+    description: "Path of the produced backup on the runner"
+    value: ${{ steps.backup.outputs.artifact_path }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install client tools
+      if: ${{ inputs.install_clients == 'true' }}
+      shell: bash
+      run: |
+        "${{ github.action_path }}/scripts/lib/install.sh" \
+          --db "${{ inputs.db_type }}" \
+          --targets "${{ inputs.targets }}"
+
+    - name: Run backup
+      id: backup
+      shell: bash
+      env:
+        DB_TYPE: ${{ inputs.db_type }}
+        DB_HOST: ${{ inputs.db_host }}
+        DB_PORT: ${{ inputs.db_port }}
+        DB_USER: ${{ inputs.db_user }}
+        DB_PASSWORD: ${{ inputs.db_password }}
+        DB_NAME: ${{ inputs.db_name }}
+        DB_URL: ${{ inputs.db_url }}
+        DB_FILE: ${{ inputs.db_file }}
+        DB_ALL: ${{ inputs.db_all }}
+        DB_DUMP_COMMAND: ${{ inputs.db_dump_command }}
+        BACKUP_TARGETS: ${{ inputs.targets }}
+        COMPRESS_FORMAT: ${{ inputs.compress_format }}
+        RETENTION_DAYS: ${{ inputs.retention_days }}
+        BACKUP_PASSPHRASE: ${{ inputs.backup_passphrase }}
+        BACKUP_AGE_RECIPIENT: ${{ inputs.age_recipient }}
+        S3_BUCKET: ${{ inputs.s3_bucket }}
+        S3_PREFIX: ${{ inputs.s3_prefix }}
+        S3_ENDPOINT: ${{ inputs.s3_endpoint }}
+        S3_REGION: ${{ inputs.s3_region }}
+        AWS_ACCESS_KEY_ID: ${{ inputs.aws_access_key_id }}
+        AWS_SECRET_ACCESS_KEY: ${{ inputs.aws_secret_access_key }}
+        WEBDAV_URL: ${{ inputs.webdav_url }}
+        WEBDAV_USER: ${{ inputs.webdav_user }}
+        WEBDAV_PASSWORD: ${{ inputs.webdav_password }}
+        WEBDAV_PATH: ${{ inputs.webdav_path }}
+        WEBDAV_VENDOR: ${{ inputs.webdav_vendor }}
+        BACKUP_REPO: ${{ inputs.backup_repo }}
+        BACKUP_REPO_TOKEN: ${{ inputs.backup_repo_token }}
+        BACKUP_BRANCH: ${{ inputs.backup_branch }}
+        GIT_PREFIX: ${{ inputs.git_prefix }}
+        GIT_SQUASH: ${{ inputs.git_squash }}
+      run: "${{ github.action_path }}/scripts/backup.sh"
